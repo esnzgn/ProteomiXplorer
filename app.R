@@ -1,15 +1,4 @@
-# maiappend
-
-library(shiny)
-library(shinydashboard)
-library(DT)
-library(ggplot2)
-library(plotly)
-library(dplyr)
-library(tidyr)
-library(ComplexHeatmap)
-library(circlize)
-library(shinyWidgets)
+source("sys_req.R")
 
 # Define UI
 ui <- dashboardPage(
@@ -64,13 +53,13 @@ ui <- dashboardPage(
 # Define Server
 server <- function(input, output, session) {
   
-  # Placeholder data load (replace with actual data loading logic)
+  # Load the actual expression data (ensure proper formatting)
   data <- reactive({
-    # Simulate a dummy dataset
-    read.csv("your_cleaned_expression_data.csv")
+    read_xlsx("mmc2.xlsx", sheet = 2)
   })
   
   observe({
+    req(data())
     updatePickerInput(session, "gene", choices = unique(data()$Gene_Symbol))
     updatePickerInput(session, "genes", choices = unique(data()$Gene_Symbol))
   })
@@ -108,13 +97,13 @@ server <- function(input, output, session) {
   })
   
   output$dimredPlot <- renderPlotly({
-    # Placeholder for PCA/UMAP logic based on full expression matrix
-    NULL
+    # Placeholder for PCA/UMAP logic
+    plot_ly(type = "scatter", mode = "markers")
   })
   
   output$bubblePlot <- renderPlotly({
-    # Placeholder for Tissue Mapper
-    NULL
+    # Placeholder for tissue-level summarization
+    plot_ly(type = "scatter", mode = "markers")
   })
   
   output$missingPlot <- renderPlot({
@@ -134,7 +123,3 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
-
-
-
-
