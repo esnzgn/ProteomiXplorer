@@ -1,125 +1,95 @@
-source("sys_req.R")
+source("sys_req.R")  # Load required libraries
 
-# Define UI
+# Load and clean data
+raw_data <- readxl::read_xlsx("mmc2.xlsx", sheet = 2)
+
+# Identify expression columns (numeric peptide counts)
+peptide_cols <- grep("^TenPx\\d+_Peptides$", colnames(raw_data), value = TRUE)
+
+# Identify sample meta columns (tissue + cell line)
+meta_cols <- grep("_TenPx\\d+$", colnames(raw_data), value = TRUE)
+
+# Combine Gene_Symbol + expression data + meta info
+data_cleaned <- raw_data %>%
+  select(Gene_Symbol, all_of(peptide_cols), all_of(meta_cols)) %>%
+  filter(rowSums(across(all_of(peptide_cols)), na.rm = TRUE) > 0)
+
+# Melt data for visualization
+long_data <- data_cleaned %>%
+  pivot_longer(-Gene_Symbol, names_to = "Sample", values_to = "Peptides") %>%
+  mutate(
+    Type = ifelse(grepl("Peptides$", Sample), "Peptide", "Meta"),
+    TenPx = stringr::str_extract(Sample, "TenPx\\d+"),
+    CellLine = ifelse(Type == "Meta", gsub("_TenPx\\d+", "", Sample), NA)
+  )
+
+# Join expression & metadata
+expr_data <- long_data %>% filter(Type == "Peptide")
+meta_data <- long_data %>% filter(Type == "Meta") %>% 
+  select(TenPx, MetaValue = Peptides, CellLine) %>%
+  distinct()
+
+plot_data <- expr_data %>%
+  left_join(meta_data, by = "TenPx") %>%
+  filter(!is.na(MetaValue), !is.na(Peptides))
+
+# Extract unique inputs
+all_genes <- unique(plot_data$Gene_Symbol)
+all_tissues <- sort(unique(plot_data$MetaValue))
+all_cells <- sort(unique(plot_data$CellLine))
+
+# UI
 ui <- dashboardPage(
   dashboardHeader(title = "ProteomiXplorer"),
   dashboardSidebar(
     sidebarMenu(
-      menuItem("Expression Explorer", tabName = "explorer", icon = icon("chart-line")),
-      menuItem("Compare Proteins", tabName = "compare", icon = icon("layer-group")),
-      menuItem("PCA & UMAP", tabName = "dimred", icon = icon("project-diagram")),
-      menuItem("Tissue Mapper", tabName = "mapper", icon = icon("map")),
-      menuItem("Quality Control", tabName = "qc", icon = icon("microscope"))
-    )
+      menuItem("Expression Viewer", tabName = "viewer", icon = icon("chart-bar"))
+    ),
+    selectInput("gene", "Select Protein/Gene:", choices = all_genes),
+    selectInput("tissue", "Filter by Tissue:", choices = c("All", all_tissues), selected = "All"),
+    selectInput("cell", "Filter by Cell Line:", choices = c("All", all_cells), selected = "All")
   ),
   dashboardBody(
     tabItems(
-      tabItem(tabName = "explorer",
-              fluidPage(
-                pickerInput("gene", "Select Protein/Gene:", choices = NULL, options = list(`live-search` = TRUE)),
-                plotlyOutput("expressionPlot"),
-                DTOutput("sampleInfo")
-              )
-      ),
-      tabItem(tabName = "compare",
-              fluidPage(
-                pickerInput("genes", "Select up to 5 Genes:", choices = NULL, multiple = TRUE, options = list(`max-options` = 5, `live-search` = TRUE)),
-                plotlyOutput("heatmapPlot"),
-                plotlyOutput("corrPlot")
-              )
-      ),
-      tabItem(tabName = "dimred",
-              fluidPage(
-                radioButtons("dimred_method", "Choose Method:", choices = c("PCA", "UMAP"), inline = TRUE),
-                pickerInput("colorBy", "Color by:", choices = c("Tissue", "Selected Gene Expression")),
-                plotlyOutput("dimredPlot")
-              )
-      ),
-      tabItem(tabName = "mapper",
-              fluidPage(
-                plotlyOutput("bubblePlot")
-              )
-      ),
-      tabItem(tabName = "qc",
-              fluidPage(
-                plotOutput("missingPlot"),
-                plotOutput("peptideDist")
+      tabItem(tabName = "viewer",
+              fluidRow(
+                box(title = "Expression Boxplot", width = 12, plotlyOutput("genePlot")),
+                box(title = "Expression Table", width = 12, DTOutput("dataTable"))
               )
       )
     )
   )
 )
 
-# Define Server
+# Server
 server <- function(input, output, session) {
   
-  # Load the actual expression data (ensure proper formatting)
-  data <- reactive({
-    read_xlsx("mmc2.xlsx", sheet = 2)
+  filtered_data <- reactive({
+    df <- plot_data %>% filter(Gene_Symbol == input$gene)
+    
+    if (input$tissue != "All") {
+      df <- df %>% filter(MetaValue == input$tissue)
+    }
+    if (input$cell != "All") {
+      df <- df %>% filter(CellLine == input$cell)
+    }
+    df
   })
   
-  observe({
-    req(data())
-    updatePickerInput(session, "gene", choices = unique(data()$Gene_Symbol))
-    updatePickerInput(session, "genes", choices = unique(data()$Gene_Symbol))
-  })
-  
-  output$expressionPlot <- renderPlotly({
-    req(input$gene)
-    df <- data() %>% filter(Gene_Symbol == input$gene)
-    df_long <- df %>% pivot_longer(cols = starts_with("TenPx"), names_to = "Sample", values_to = "Expression")
-    p <- ggplot(df_long, aes(x = Sample, y = Expression)) +
-      geom_boxplot() +
+  output$genePlot <- renderPlotly({
+    req(filtered_data())
+    p <- ggplot(filtered_data(), aes(x = CellLine, y = Peptides)) +
+      geom_boxplot(fill = "steelblue") +
       theme_minimal() +
-      labs(title = paste("Expression of", input$gene)) +
-      theme(axis.text.x = element_text(angle = 90))
+      labs(title = paste("Expression of", input$gene), y = "Peptides", x = "") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
     ggplotly(p)
   })
   
-  output$sampleInfo <- renderDT({
-    req(input$gene)
-    df <- data() %>% filter(Gene_Symbol == input$gene)
-    datatable(df)
-  })
-  
-  output$heatmapPlot <- renderPlotly({
-    req(input$genes)
-    df <- data() %>% filter(Gene_Symbol %in% input$genes)
-    mat <- df %>% select(Gene_Symbol, starts_with("TenPx")) %>% column_to_rownames("Gene_Symbol") %>% as.matrix()
-    heatmaply::heatmaply(mat, scale = "row")
-  })
-  
-  output$corrPlot <- renderPlotly({
-    req(input$genes)
-    df <- data() %>% filter(Gene_Symbol %in% input$genes)
-    mat <- df %>% select(Gene_Symbol, starts_with("TenPx")) %>% column_to_rownames("Gene_Symbol") %>% t() %>% cor()
-    heatmaply::heatmaply(mat)
-  })
-  
-  output$dimredPlot <- renderPlotly({
-    # Placeholder for PCA/UMAP logic
-    plot_ly(type = "scatter", mode = "markers")
-  })
-  
-  output$bubblePlot <- renderPlotly({
-    # Placeholder for tissue-level summarization
-    plot_ly(type = "scatter", mode = "markers")
-  })
-  
-  output$missingPlot <- renderPlot({
-    df <- data()
-    missing_data <- df %>% select(starts_with("TenPx")) %>% summarise_all(~sum(is.na(.)))
-    barplot(unlist(missing_data), las = 2, main = "Missing Data per Sample")
-  })
-  
-  output$peptideDist <- renderPlot({
-    df <- data()
-    peptides <- df %>% select(contains("Peptides")) %>% pivot_longer(everything(), names_to = "Sample", values_to = "Peptides")
-    ggplot(peptides, aes(x = Peptides)) +
-      geom_histogram(bins = 50, fill = "steelblue") +
-      theme_minimal() +
-      labs(title = "Peptide Count Distribution")
+  output$dataTable <- renderDT({
+    filtered_data() %>% select(Gene_Symbol, CellLine, MetaValue, Peptides)
   })
 }
 
+# Run app
 shinyApp(ui, server)
